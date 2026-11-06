@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="mn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>ЧТТ — чингэлэг сканнер</title>
+<style>
+  :root { --g:#16A34A; --y:#F59E0B; --bg:#0B1220; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:#F8FAFC; font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; overflow:hidden; }
+  #wrap { position:fixed; inset:0; }
+  video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  #ov { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+  .top { position:absolute; top:0; left:0; right:0; padding:12px 14px calc(12px + env(safe-area-inset-top)); display:flex; gap:10px; align-items:center; background:linear-gradient(#000a, #0000); }
+  .top b { font-size:17px; flex:1; }
+  .btn { border:0; border-radius:12px; padding:12px 16px; font:700 16px system-ui,sans-serif; cursor:pointer; }
+  .ghost { background:#ffffff22; color:#fff; }
+  #msg { position:absolute; left:0; right:0; text-align:center; font-weight:600; text-shadow:0 1px 4px #000; }
+  .bottom { position:absolute; left:0; right:0; bottom:0; padding:12px 14px calc(14px + env(safe-area-inset-bottom)); background:linear-gradient(#0000, #000c 30%); }
+  #found { display:none; background:#fff; color:#111; border-radius:16px; padding:14px; margin-bottom:12px; box-shadow:0 8px 30px #0008; }
+  #found .code { font:800 30px ui-monospace,Menlo,Consolas,monospace; letter-spacing:.04em; text-align:center; }
+  #found .code span { color:var(--g); }
+  #found .q { text-align:center; color:#374151; margin:4px 0 12px; }
+  #found .row { display:flex; gap:10px; } #found .row .btn { flex:1; font-size:19px; padding:16px; }
+  .ok { background:var(--g); color:#fff; } .no { background:#E5E7EB; color:#111; }
+  #list { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+  .chip { background:#ffffff1f; border:1px solid #ffffff44; border-radius:10px; padding:6px 10px; font:700 15px ui-monospace,Menlo,Consolas,monospace; display:flex; gap:8px; align-items:center; }
+  .chip button { background:none; border:0; color:#fca5a5; font-size:16px; cursor:pointer; }
+  #done { width:100%; font-size:19px; padding:16px; background:var(--y); color:#111; }
+  #done:disabled { background:#475569; color:#cbd5e1; }
+  #manual { width:100%; margin-top:8px; }
+  #found .note { text-align:center; font-size:13px; color:#B45309; margin-top:-6px; margin-bottom:10px; }
+  #zoom { display:flex; gap:8px; justify-content:center; margin-bottom:10px; }
+  #zoom button { min-width:56px; padding:10px 12px; border-radius:999px; border:0; background:#ffffff26; color:#fff; font:700 16px system-ui,sans-serif; }
+  #zoom button.on { background:#F59E0B; color:#111; }
+  video { transform-origin:50% 50%; }
+  #err { position:absolute; inset:0; display:none; align-items:center; justify-content:center; padding:24px; text-align:center; background:var(--bg); }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <video id="v" playsinline muted autoplay></video>
+  <canvas id="ov"></canvas>
+  <div class="top"><b>Чингэлгийн дугаар уншуулах <span id="cnt"></span></b><button class="btn ghost" id="torch" hidden>🔦</button><button class="btn ghost" id="close">✕</button></div>
+  <div id="msg">Камер асааж байна…</div>
+  <div class="bottom">
+    <div id="found"><div class="code" id="fcode"></div><div class="q">Энэ дугаар зөв үү?</div><div class="note" id="fnote"></div>
+      <div class="row"><button class="btn no" id="fno">✗ Үгүй</button><button class="btn ok" id="fok">✓ Зөв</button></div></div>
+    <div id="zoom"><button data-z="1" class="on">1×</button><button data-z="1.5">1.5×</button><button data-z="2">2×</button><button data-z="3">3×</button></div>
+    <div id="list"></div>
+    <button class="btn" id="done" disabled>Вэб рүү илгээх</button>
+    <button class="btn ghost" id="manual">Дугаараа гараар бичих</button>
+  </div>
+  <div id="err"></div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+<script>
+/* PaddleOCR (PP-OCRv4) det+rec — браузер ба node-д ажиллана. img: {data:RGBA Uint8ClampedArray, width, height} */
+(function (G) {
+  function resizeRGBA(img, w, h) { // bilinear
+    var o = new Uint8ClampedArray(w * h * 4), sx = img.width / w, sy = img.height / h;
+    for (var y = 0; y < h; y++) { var fy = (y + 0.5) * sy - 0.5, y0 = Math.max(0, Math.floor(fy)), y1 = Math.min(img.height - 1, y0 + 1), dy = fy - y0;
+      for (var x = 0; x < w; x++) { var fx = (x + 0.5) * sx - 0.5, x0 = Math.max(0, Math.floor(fx)), x1 = Math.min(img.width - 1, x0 + 1), dx = fx - x0;
+        for (var c = 0; c < 3; c++) { var a = img.data[(y0 * img.width + x0) * 4 + c], b = img.data[(y0 * img.width + x1) * 4 + c], d = img.data[(y1 * img.width + x0) * 4 + c], e = img.data[(y1 * img.width + x1) * 4 + c];
+          o[(y * w + x) * 4 + c] = (a * (1 - dx) + b * dx) * (1 - dy) + (d * (1 - dx) + e * dx) * dy; } o[(y * w + x) * 4 + 3] = 255; } }
+    return { data: o, width: w, height: h };
+  }
+  function cropRGBA(img, x, y, w, h) {
+    x = Math.max(0, Math.round(x)); y = Math.max(0, Math.round(y)); w = Math.min(img.width - x, Math.round(w)); h = Math.min(img.height - y, Math.round(h));
+    var o = new Uint8ClampedArray(w * h * 4);
+    for (var r = 0; r < h; r++) o.set(img.data.subarray(((y + r) * img.width + x) * 4, ((y + r) * img.width + x + w) * 4), r * w * 4);
+    return { data: o, width: w, height: h };
+  }
+  function toTensor(img, mean, std) {
+    var n = img.width * img.height, f = new Float32Array(3 * n);
+    for (var i = 0; i < n; i++) for (var c = 0; c < 3; c++) f[c * n + i] = (img.data[i * 4 + c] / 255 - mean[c]) / std[c];
+    return f;
+  }
+  function make(ort, detModel, recModel, keysText) {
+    var keys = ['blank'].concat(keysText.split('\n').filter(function (x) { return x !== ''; })).concat([' ']);
+    var det, rec;
+    var ready = Promise.all([ort.InferenceSession.create(detModel), ort.InferenceSession.create(recModel)]).then(function (s) { det = s[0]; rec = s[1]; });
+    function runDet(img, lim) {
+      lim = lim || 960; var k = lim / Math.max(img.width, img.height);
+      var w = Math.max(32, Math.round(img.width * k / 32) * 32), h = Math.max(32, Math.round(img.height * k / 32) * 32), r = resizeRGBA(img, w, h);
+      var t = new ort.Tensor('float32', toTensor(r, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]), [1, 3, h, w]), feeds = {}; feeds[det.inputNames[0]] = t;
+      return det.run(feeds).then(function (o) {
+        var p = o[det.outputNames[0]].data, seen = new Uint8Array(w * h), boxes = [], sx = img.width / w, sy = img.height / h;
+        for (var i = 0; i < w * h; i++) {
+          if (seen[i] || p[i] < 0.3) continue;
+          var st = [i], x0 = w, y0 = h, x1 = 0, y1 = 0, n = 0, sum = 0; seen[i] = 1;
+          while (st.length) { var j = st.pop(), x = j % w, y = (j / w) | 0; n++; sum += p[j]; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+            [j - 1, j + 1, j - w, j + w].forEach(function (q) { if (q >= 0 && q < w * h && !seen[q] && p[q] >= 0.3 && Math.abs((q % w) - x) <= 1) { seen[q] = 1; st.push(q); } }); }
+          if (n < 12 || sum / n < 0.5) continue;
+          var bw = x1 - x0 + 1, bh = y1 - y0 + 1, pad = Math.max(bh * 0.6, 3); // unclip
+          boxes.push({ x: (x0 - pad) * sx, y: (y0 - pad) * sy, w: (bw + 2 * pad) * sx, h: (bh + 2 * pad) * sy });
+        }
+        return boxes;
+      });
+    }
+    function runRec(img) {
+      var h = 48, w = Math.min(1280, Math.max(16, Math.round(img.width * h / img.height))), r = resizeRGBA(img, w, h);
+      var feeds = {}; feeds[rec.inputNames[0]] = new ort.Tensor('float32', toTensor(r, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]), [1, 3, h, w]);
+      return rec.run(feeds).then(function (o) {
+        var out = o[rec.outputNames[0]], T = out.dims[1], C = out.dims[2], prev = -1, txt = '', conf = 0, cnt = 0;
+        for (var t = 0; t < T; t++) { var m = -1, mi = 0; for (var c = 0; c < C; c++) { var v = out.data[t * C + c]; if (v > m) { m = v; mi = c; } }
+          if (mi !== prev && mi !== 0) { txt += keys[mi] || ''; conf += m; cnt++; } prev = mi; }
+        return { text: txt, conf: cnt ? conf / cnt : 0 };
+      });
+    }
+    /** зураг → текстийн мөрүүд [{text, conf, box}] */
+    function read(img) {
+      return ready.then(function () { return runDet(img); }).then(function (boxes) {
+        boxes = boxes.filter(function (b) { return b.w > 8 && b.h > 6; }).sort(function (a, b) { return Math.abs(a.y - b.y) > Math.min(a.h, b.h) / 2 ? a.y - b.y : a.x - b.x; }).slice(0, 12);
+        var res = [];
+        return boxes.reduce(function (pr, b) { return pr.then(function () { var c = cropRGBA(img, b.x, b.y, b.w, b.h); if (!c.width || !c.height) return; return runRec(c).then(function (r) { r.box = b; res.push(r); }); }); }, Promise.resolve()).then(function () { return res; });
+      });
+    }
+    return { ready: ready, read: read, release: function () { try { det && det.release(); rec && rec.release(); } catch (e) { } }, readLine: function (img) { return ready.then(function () { return runRec(img); }); } };
+  }
+  /* ISO 6346 */
+  function isoOk(c) { if (!/^[A-Z]{4}\d{7}$/.test(c)) return false; var v = function (ch) { var n = ch.charCodeAt(0) - 55; return n + Math.floor((n - 1) / 10); }, s = 0; for (var i = 0; i < 10; i++) s += (i < 4 ? v(c[i]) : +c[i]) * Math.pow(2, i); return (s % 11) % 10 === +c[10]; }
+  function chk(c) { var v = function (ch) { var n = ch.charCodeAt(0) - 55; return n + Math.floor((n - 1) / 10); }, s = 0; for (var i = 0; i < 10; i++) s += (i < 4 ? v(c[i]) : +c[i]) * Math.pow(2, i); return (s % 11) % 10; }
+  var toD = { O: '0', Q: '0', D: '0', I: '1', L: '1', T: '1', Z: '2', S: '5', B: '8', G: '6' }, toL = { '0': 'O', '1': 'I', '2': 'Z', '5': 'S', '8': 'B', '6': 'G' };
+  /** мөрүүдээс ISO-оор зөв чингэлгийн дугаарууд. {codes:[...], serials:[...]} — serials: үсэг нь уншигдаагүй 7 оронтой хэсэг (жагсаалтаас тааруулна) */
+  function codesFrom(lines) {
+    var toks = [], out = [], guess = [], ser = [];
+    lines.forEach(function (l) { String(l.text || l).toUpperCase().split(/[^A-Z0-9]+/).forEach(function (t) { if (t) toks.push(t); }); });
+    var fx = function (str, map) { return str.split('').map(function (c) { return map[c] || c; }).join(''); };
+    for (var i = 0; i < toks.length; i++) for (var j = i; j < Math.min(toks.length, i + 4); j++) {
+      var s = toks.slice(i, j + 1).join('');
+      for (var p = 0; p + 10 <= s.length; p++) {
+        var a = fx(s.substr(p, 4), toL), d = fx(s.substr(p + 4, 7), toD);
+        if (!/^[A-Z]{3}[UJZ]$/.test(a)) continue;
+        if (/^\d{7}$/.test(d)) { if (isoOk(a + d)) { if (out.indexOf(a + d) < 0) out.push(a + d); continue; } }
+        var d6 = d.substr(0, 6);
+        if (/^\d{6}$/.test(d6) && (d.length === 6) && p === 0 && s.length === 10) { var cc = a + d6 + chk(a + d6); if (guess.indexOf(cc) < 0) guess.push(cc); }
+      }
+    }
+    // зөвхөн цифр: 6 оронтой серийн дугаар (+ шалгах цифр) — үсгийг жагсаалтаас олно
+    for (i = 0; i < toks.length; i++) {
+      var t = fx(toks[i], toD), nx = toks[i + 1] ? fx(toks[i + 1], toD) : '';
+      if (/^\d{7}$/.test(t)) ser.push(t); else if (/^\d{6}$/.test(t)) ser.push(/^\d$/.test(nx) ? t + nx : t);
+    }
+    return { codes: out.length ? out : guess, serials: ser };
+  }
+  var api = { make: make, isoOk: isoOk, codesFrom: codesFrom, cropRGBA: cropRGBA };
+  if (typeof module !== 'undefined') module.exports = api; else G.TTOCR = api;
+})(this);
+
+</script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var qs = new URLSearchParams(location.search), MAX = Math.max(1, Math.min(4, +(qs.get('n') || 4)));
+  var LOCAL = qs.get('local') === '1';
+  var v = $('v'), ov = $('ov'), ctx = ov.getContext('2d'), work = document.createElement('canvas');
+  var picked = [], rejected = {}, pending = null, busy = false, ocr = null, stream = null;
+  var isoOk = TTOCR.isoOk;
+  /* томруулах: утас дэмжвэл камерын бодит zoom, үгүй бол дэлгэц дээр томруулна (хоёр хуруугаар чимхэж ч болно) */
+  var ZOOM = 1, ZD = 1, track = null, zcap = null;
+  function setZoom(z) {
+    ZOOM = Math.max(1, Math.min(5, z));
+    var hw = 1;
+    if (zcap && track) { hw = Math.max(zcap.min || 1, Math.min(zcap.max || 1, ZOOM)); try { track.applyConstraints({ advanced: [{ zoom: hw }] }); } catch (e) { hw = 1; } }
+    ZD = ZOOM / hw; v.style.transform = ZD > 1.001 ? 'scale(' + ZD + ')' : '';
+    document.querySelectorAll('#zoom button').forEach(function (b) { b.classList.toggle('on', Math.abs(+b.dataset.z - ZOOM) < 0.05); });
+  }
+  document.querySelectorAll('#zoom button').forEach(function (b) { b.onclick = function () { setZoom(+b.dataset.z); }; });
+  var pinch = null, dist = function (t) { return Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY); };
+  document.addEventListener('touchstart', function (e) { if (e.touches.length === 2) pinch = { d: dist(e.touches), z: ZOOM }; }, { passive: true });
+  document.addEventListener('touchmove', function (e) { if (pinch && e.touches.length === 2) { setZoom(pinch.z * dist(e.touches) / pinch.d); e.preventDefault(); } }, { passive: false });
+  document.addEventListener('touchend', function (e) { if (e.touches.length < 2) pinch = null; });
+  /* вэбээс ирэх чингэлгийн жагсаалт (талбайд байгаа нь эхэнд) */
+  var KNOWN = [], GRP = {}; try { KNOWN = JSON.parse(localStorage.getItem('tt_known') || '[]'); } catch (e) { }
+  var setGrp = function (arr) { GRP = {}; (arr || []).forEach(function (s) { var g = String(s).split(' '); g.forEach(function (c) { if (!GRP[c]) GRP[c] = g; }); }); };   // эхнийх нь давамгайлна (талбайн жагсаалт)
+  try { setGrp(JSON.parse(localStorage.getItem('tt_grp') || '[]')); } catch (e) { }
+  window.addEventListener('message', function (e) { var d = e.data; if (d && d.type === 'tt-known' && Array.isArray(d.list)) { KNOWN = d.list; if (d.grp) setGrp(d.grp); try { localStorage.setItem('tt_known', JSON.stringify(KNOWN.slice(0, 5000))); if (d.grp) localStorage.setItem('tt_grp', JSON.stringify(d.grp.slice(0, 6000))); } catch (x) { } } });
+  try { if (window.opener) window.opener.postMessage({ type: 'tt-ready' }, '*'); } catch (e) { }
+  /** уншсан мөрүүдээс санал болгох дугаар: {code, note} */
+  function decide(lines) {
+    var r = TTOCR.codesFrom(lines), ok = function (c) { return picked.indexOf(c) < 0 && !rejected[c]; };
+    var codes = r.codes.filter(ok);
+    if (codes.length) {
+      var c = codes[0], inList = KNOWN.indexOf(c) >= 0;
+      if (!inList && KNOWN.length) { // үсэг/цифр буруу уншсан бол жагсаалтаас ижил серийн дугаартайг сонгоно
+        var alt = KNOWN.filter(function (k) { return k.substr(4, 6) === c.substr(4, 6) && ok(k); });
+        if (alt.length === 1) return { code: alt[0], note: 'Жагсаалтаас тааруулав' };
+      }
+      return { code: c, note: inList || !KNOWN.length ? '' : '⚠ Манай жагсаалтад байхгүй дугаар' };
+    }
+    for (var i = 0; i < r.serials.length; i++) { // зөвхөн цифр уншигдсан
+      var sr = r.serials[i], m = KNOWN.filter(function (k) { return (sr.length === 7 ? k.substr(4) === sr : k.substr(4, 6) === sr) && ok(k); });
+      if (m.length === 1) return { code: m[0], note: 'Үсэг нь бүдэг — жагсаалтаас олов' };
+    }
+    return null;
+  }
+  function guide() { var W = ov.width, H = ov.height, gw = Math.round(W * 0.86), gh = Math.round(Math.min(H * 0.2, gw * 0.3)); return { x: (W - gw) / 2, y: H * 0.34 - gh / 2, w: gw, h: gh }; }
+  function draw(color, label) {
+    ov.width = ov.clientWidth * devicePixelRatio; ov.height = ov.clientHeight * devicePixelRatio;
+    var g = guide(); ctx.clearRect(0, 0, ov.width, ov.height);
+    ctx.fillStyle = '#0007'; ctx.fillRect(0, 0, ov.width, g.y); ctx.fillRect(0, g.y + g.h, ov.width, ov.height); ctx.fillRect(0, g.y, g.x, g.h); ctx.fillRect(g.x + g.w, g.y, ov.width, g.h);
+    ctx.lineWidth = 5 * devicePixelRatio; ctx.strokeStyle = color; ctx.strokeRect(g.x, g.y, g.w, g.h);
+    $('msg').style.top = (g.y + g.h) / devicePixelRatio + 12 + 'px'; $('msg').textContent = label;
+  }
+  function crop() {
+    // видеоны харагдаж буй хэсгээс хүрээний доторхыг (бага зэрэг өргөнөөр) тайрна
+    var vw = v.videoWidth, vh = v.videoHeight, cw = ov.clientWidth, ch = ov.clientHeight;
+    var sc = Math.max(cw / vw, ch / vh) * ZD, ox = (cw - vw * sc) / 2, oy = (ch - vh * sc) / 2, g = guide(), d = devicePixelRatio;
+    var sx = (g.x / d - ox) / sc, sy = (g.y / d - oy) / sc, sw = g.w / d / sc, sh = g.h / d / sc, m = sh * 0.25;
+    sy = Math.max(0, sy - m); sh = Math.min(vh - sy, sh + 2 * m);
+    var k = Math.min(2, 1280 / sw); work.width = Math.round(sw * k); work.height = Math.round(sh * k);
+    var c = work.getContext('2d', { willReadFrequently: true }); c.drawImage(v, sx, sy, sw, sh, 0, 0, work.width, work.height);
+    return c.getImageData(0, 0, work.width, work.height);
+  }
+  function loop() {
+    if (!busy && !pending && ocr && v.readyState >= 2 && picked.length < MAX) {
+      busy = true;
+      ocr.read(crop()).then(function (lines) {
+        busy = false; var f = decide(lines);
+        if (f) { pending = f.code; showFound(f.note); }
+      }).catch(function (e) { busy = false; console.error(e); });
+    }
+    if (!pending && ocr) draw(picked.length >= MAX ? '#94A3B8' : '#ffffffcc', picked.length >= MAX ? MAX + ' чингэлэг уншигдлаа — «Вэб рүү илгээх» дарна уу' : 'Чингэлгийн дугаарыг цагаан хүрээнд багтаана уу');
+    setTimeout(loop, 150);
+  }
+  function showFound(note) {
+    draw('#16A34A', '✓ Дугаар олдлоо'); $('fnote').textContent = note || '';
+    if (navigator.vibrate) navigator.vibrate(80);
+    $('fcode').innerHTML = pending.slice(0, 4) + '<span>' + pending.slice(4) + '</span>'; $('found').style.display = 'block';
+  }
+  function render() {
+    $('cnt').textContent = picked.length + '/' + MAX;
+    $('list').innerHTML = picked.map(function (c, i) { return '<span class="chip">' + c + '<button data-i="' + i + '">✕</button></span>'; }).join('');
+    $('list').querySelectorAll('button').forEach(function (b) { b.onclick = function () { picked.splice(+b.dataset.i, 1); render(); }; });
+    $('done').disabled = !picked.length; $('done').textContent = picked.length ? 'Вэб рүү илгээх (' + picked.length + ')' : 'Вэб рүү илгээх';
+  }
+  $('fok').onclick = function () {
+    var c0 = pending; picked.push(c0); KNOWN.indexOf(c0) < 0 && KNOWN.push(c0); pending = null; $('found').style.display = 'none';
+    // нэг машинаар хамт явдаг багцын бусдыг шууд нэмнэ
+    var add = 0; (GRP[c0] || []).forEach(function (c) { if (picked.length < MAX && picked.indexOf(c) < 0) { picked.push(c); add++; } });
+    render();
+    if (picked.length >= MAX) { draw('#16A34A', (add ? 'Багцаар ' + picked.length + ' чингэлэг — ' : '') + 'вэб рүү илгээж байна…'); setTimeout(send, 900); }
+  };
+  $('fno').onclick = function () { rejected[pending] = 1; setTimeout(function (c) { delete rejected[c]; }, 4000, pending); pending = null; $('found').style.display = 'none'; };
+  $('manual').onclick = function () {
+    var c = (prompt('Чингэлгийн дугаар (жиш. CICU3534290)') || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!c) return; if (!isoOk(c) && !confirm(c + ' — шалгах орон таарахгүй байна. Тэгсэн ч нэмэх үү?')) return;
+    if (picked.indexOf(c) < 0 && picked.length < MAX) picked.push(c); render();
+  };
+  function send() {
+    var data = { type: 'tt-scan', codes: picked.slice() };
+    try { if (window.opener) { window.opener.postMessage(data, '*'); stop(); window.close(); return; } } catch (e) { }
+    // нээсэн цонх олдохгүй бол: хуулах
+    var txt = picked.join(' ');
+    (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(function () { alert('Дугаарууд хуулагдлаа: ' + txt + '\nВэб дээрх чингэлгийн нүдэнд буулгана уу.'); }, function () { prompt('Эдгээрийг хуулна уу:', txt); });
+  }
+  $('done').onclick = send;
+  $('close').onclick = function () { stop(); window.close(); };
+  function stop() { try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { } try { ocr && ocr.release(); } catch (e) { } }
+  // таб хаагдах/нуугдахад камер, санах ойг чөлөөлнө (iPhone-д хуучин табууд санах ой эзэлдэг)
+  window.addEventListener('pagehide', stop);
+
+  // камер + OCR
+  function fail(t) { $('err').style.display = 'flex'; $('err').innerHTML = '<div><h2>Камер нээгдсэнгүй</h2><p>' + t + '</p><p>Хөтчийн тохиргоонд энэ сайтад камерын эрх (Allow) олгоно уу.</p></div>'; }
+  function failOcr(e) {
+    var m = e && e.message || String(e), mem = /memory|initWasm|backend/i.test(m);
+    // санах ой дутвал нэг удаа өөрөө дахин ачаална
+    if (mem) { var k = 'tt_retry'; try { if (!sessionStorage.getItem(k)) { sessionStorage.setItem(k, '1'); stop(); location.reload(); return; } sessionStorage.removeItem(k); } catch (x) { } }
+    stop(); $('err').style.display = 'flex';
+    $('err').innerHTML = '<div><h2>' + (mem ? 'Утасны санах ой дүүрсэн байна' : 'Унших програм ачаалагдсангүй') + '</h2>' +
+      (mem ? '<p>Safari / Chrome-ийн <b>бусад табуудыг хаагаад</b> (ялангуяа өмнө нээсэн сканнерууд) дахин оролдоно уу. Шаардлагатай бол хөтчөө бүрэн хаагаад дахин нээнэ.</p>' : '<p>Интернэт холболтоо шалгаад дахин оролдоно уу.</p>') +
+      '<p style="font-size:12px;opacity:.6">' + m + '</p><p><button class="btn ok" onclick="location.reload()">↻ Дахин оролдох</button></p><p><button class="btn ghost" id="manual2">Дугаараа гараар бичих</button></p></div>';
+    var m2 = document.getElementById('manual2'); if (m2) m2.onclick = function () { $('err').style.display = 'none'; $('manual').onclick(); };
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) fail('Энэ хөтөч камер дэмжихгүй байна.');
+  else navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false }).then(function (s) {
+    stream = s; v.srcObject = s; v.play();
+    var tr = s.getVideoTracks()[0], caps = tr.getCapabilities ? tr.getCapabilities() : {};
+    track = tr; if (caps.zoom && caps.zoom.max > 1) zcap = caps.zoom;
+    if (caps.torch) { $('torch').hidden = false; var on = false; $('torch').onclick = function () { on = !on; tr.applyConstraints({ advanced: [{ torch: on }] }); }; }
+    if (caps.focusMode && caps.focusMode.indexOf('continuous') >= 0) tr.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(function () { });
+    draw('#ffffffcc', 'Унших програм ачаалж байна… (анх удаа 15–30 сек, дараа нь шууд)');
+    var CDN = 'https://cdn.jsdelivr.net/npm/@gutenye/ocr-models@1.4.2/assets/', M = LOCAL ? './m/' : CDN;
+    ort.env.wasm.numThreads = 1; ort.env.wasm.wasmPaths = LOCAL ? './ortw/' : 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+    var get1 = function (u, t) { return fetch(u, { cache: 'force-cache' }).then(function (r) { if (!r.ok) throw new Error(u + ' ' + r.status); return t ? r.text() : r.arrayBuffer(); }).then(function (x) { return t ? x : new Uint8Array(x); }); };
+    var get = function (f, t) { return get1(M + f, t).catch(function () { return get1('./' + f, t); }); }; // CDN ажиллахгүй бол GitHub дээрх хуулбар
+    return Promise.all([get('ch_PP-OCRv4_det_infer.onnx'), get('ch_PP-OCRv4_rec_infer.onnx'), get('ppocr_keys_v1.txt', 1)]).then(function (a) {
+      var o = TTOCR.make(ort, a[0], a[1], a[2]); return o.ready.then(function () { ocr = o; try { sessionStorage.removeItem('tt_retry'); } catch (x) { } render(); loop(); });
+    }).catch(failOcr);
+  }, function (e) { fail(e && e.message || String(e)); });
+  render();
+})();
+</script>
+</body>
+</html>
